@@ -14,8 +14,10 @@ from dataset import MotionDataset
 from time_model import TimeModel
 from tqdm import tqdm
 
+torch.set_float32_matmul_precision('high')
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-EPOCHS = 6000
+EPOCHS = 8000
 LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 0
 data_path = "/home/meribejayson/Desktop/Projects/realistic-imu/data/total_capture_data"
@@ -28,6 +30,8 @@ model = TimeModel(d_model=D_MODEL,
                   inp_emb_dim=INPUT_EMBEDDING_DIM,
                   device=device,
                   num_encoders=NUM_ENCODERS).to(device)
+
+model = torch.compile(model)
 
 optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS)
@@ -187,6 +191,8 @@ else:
 
 
 
+plt.figure(figsize=(12.8, 9.6))
+
 # Plotting the losses
 plt.plot(epochs_list, train_losses, label='Train Loss', color='blue')
 plt.plot(test_epochs, test_losses, label='Test Loss', color='orange')
@@ -195,5 +201,6 @@ plt.ylabel('Loss')
 plt.title('Training and Test Loss Over Epochs')
 plt.legend()
 plt.show()
+
 
 print(f"Training completed! Logs saved to {csv_file}")

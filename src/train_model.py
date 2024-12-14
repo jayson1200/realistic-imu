@@ -1,4 +1,5 @@
 import os
+import sys
 import csv
 import torch
 import torch.nn as nn
@@ -12,7 +13,11 @@ import pickle
 
 from dataset import MotionDataset
 from time_model import TimeModel
-from tqdm import tqdm
+
+if 'ipykernel' in sys.modules:
+    from tqdm.notebook import tqdm
+else:
+    from tqdm import tqdm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 EPOCHS = 6000

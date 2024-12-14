@@ -5,10 +5,14 @@ import sys
 import pandas as pd
 import torch
 from IPython.core.display_functions import clear_output
-from quaternion import quaternion
+import quaternion
 from torch.utils.data import Dataset
 
-from tqdm import tqdm
+if 'ipykernel' in sys.modules:
+    from tqdm.notebook import tqdm
+else:
+    from tqdm import tqdm
+
 import numpy as np
 import pickle
 import nimblephysics as nimble
@@ -16,7 +20,7 @@ from scipy.signal import convolve2d
 
 
 class MotionDataset(Dataset):
-    def __init__(self, data_folder, subjects=None, dataset_type="train"):
+    def __init__(self, data_folder, subjects=None, dataset_type="train", minimize=True):
         self.data_folder = data_folder
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.target_subjects = ["s1", "s2", "s3", "s4"] if not subjects else subjects
@@ -30,6 +34,7 @@ class MotionDataset(Dataset):
                     "LeftLeg", "RightLeg", "LeftFoot", "RightFoot",
                     "Spine", "Spine1", "Spine2", "LeftHand", "RightHand", "Neck", "LeftShoulder", "RightShoulder" # Values that aren't used 
         ]
+        self.minimize = minimize
         
         self.IMU_PARTS = [
             "Head",
@@ -185,14 +190,19 @@ class MotionDataset(Dataset):
 
             norm_mocap_acc = np.linalg.norm(loc_acc, axis=1)
             norm_mocap_ang_accel = np.linalg.norm(loc_ang_accel, axis=1)
-            
-            acc_minimizer = nimble.utils.AccelerationMinimizer(numTimesteps=norm_mocap_acc.shape[0], smoothingWeight = 60 ** 2, regularizationWeight=1000, numIterations=10000)
-            ang_acc_minimizer = nimble.utils.AccelerationMinimizer(numTimesteps=norm_mocap_ang_accel.shape[0], smoothingWeight = 60 ** 2, regularizationWeight=1000, numIterations=10000) 
 
             mocap_data[mocap_tgt_part] = np.empty((norm_mocap_acc.shape[0], 2))
-            mocap_data[mocap_tgt_part][:, 0] = acc_minimizer.minimize(norm_mocap_acc)
-            mocap_data[mocap_tgt_part][:, 1] = ang_acc_minimizer.minimize(norm_mocap_ang_accel)
-            
+
+            if self.minimize:
+                acc_minimizer = nimble.utils.AccelerationMinimizer(numTimesteps=norm_mocap_acc.shape[0], smoothingWeight = 60 ** 2, regularizationWeight=1000, numIterations=10000)
+                ang_acc_minimizer = nimble.utils.AccelerationMinimizer(numTimesteps=norm_mocap_ang_accel.shape[0], smoothingWeight = 60 ** 2, regularizationWeight=1000, numIterations=10000)
+
+                mocap_data[mocap_tgt_part][:, 0] = acc_minimizer.minimize(norm_mocap_acc)
+                mocap_data[mocap_tgt_part][:, 1] = ang_acc_minimizer.minimize(norm_mocap_ang_accel)
+            else:
+                mocap_data[mocap_tgt_part][:, 0] = norm_mocap_acc
+                mocap_data[mocap_tgt_part][:, 1] = norm_mocap_ang_accel
+
         return mocap_data, imu_data
         
 

@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="marker-to-ang" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="marker-to-ang" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="get-smpl-perf" project-jdk-type="Python SDK" />
 </project>

@@ -76,7 +76,7 @@ class Noise_Regressor(nn.Module):
 
             exp_term_linear = ((-d_imu / 2) * t_step).exp_()
             sin_term_linear = (t_step * omega1).add_(phi[:, :, imu_num]).sin_()
-            linear_dynamics = c[:, :, imu_num] * exp_term_linear * sin_term_linear
+            linear_kinematics = c[:, :, imu_num] * exp_term_linear * sin_term_linear
 
             k_theta_imu = k_theta[:, :, imu_num]
             d_theta_imu = d_theta[:, :, imu_num]
@@ -84,9 +84,9 @@ class Noise_Regressor(nn.Module):
 
             exp_term_angular = ((-d_theta_imu / 2) * t_step).exp_()
             sin_term_angular = (t_step * omega1_theta).add_(phi_theta[:, :, imu_num]).sin_()
-            angular_dynamics = c_theta[:, :, imu_num] * exp_term_angular * sin_term_angular
+            angular_kinematics = c_theta[:, :, imu_num] * exp_term_angular * sin_term_angular
 
-            spring_damper_dynamics_per_step = linear_dynamics.add_(angular_dynamics).triu_()
+            spring_damper_dynamics_per_step = linear_kinematics.add_(angular_kinematics).triu_()
             summed_dynamics = torch.sum(spring_damper_dynamics_per_step, dim=0, keepdim=True)
             dynamics_list.append(summed_dynamics)
 

@@ -35,6 +35,7 @@ class MotionDataset(Dataset):
                     "Spine", "Spine1", "Spine2", "LeftHand", "RightHand", "Neck", "LeftShoulder", "RightShoulder" # Values that aren't used 
         ]
         self.minimize = minimize
+        self.trial_order = []
         
         self.IMU_PARTS = [
             "Head",
@@ -73,6 +74,7 @@ class MotionDataset(Dataset):
                 
                 for trial in tqdm(avail_trials, desc=f"Trials Completed on {subject}", position=1):
                     mocap_dict, imu_dict = self.get_mocap_imu(trial, subject)
+                    self.trial_order.append((subject, trial))
                     
                     # Funny things always seem to happen at the end and the beginning so I removed the first and last 3 indices
                     curr_mocap = np.concatenate([mocap_dict[part] for part in self.MOCAP_PARTS], axis = 1)[3:-3, :]
@@ -83,7 +85,7 @@ class MotionDataset(Dataset):
                     self.imu_data.append(curr_imu.astype(np.float32))
 
             with open(dataset_bin_path ,'wb') as f:
-                pickle.dump({"mocap": self.mocap_data, "imu": self.imu_data}, f)
+                pickle.dump({"mocap": self.mocap_data, "imu": self.imu_data, "order": self.trial_order}, f)
             
             if 'ipykernel' in sys.modules:
                 clear_output(wait=True)
@@ -95,6 +97,7 @@ class MotionDataset(Dataset):
                 
                 self.mocap_data = data['mocap']
                 self.imu_data = data['imu']
+                self.trial_order = data['order']
     
     
     def get_corresponding_mocap_imu_idx(self, idx):

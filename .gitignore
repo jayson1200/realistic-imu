@@ -2,3 +2,5 @@ data/*
 models/*
 amass/*
 smplx/*
+src/weights/*
+src/wandb/*

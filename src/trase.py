@@ -10,7 +10,7 @@ NUM_OF_NOISE_PARAMS = 10
 class Encoder(nn.Module):
     def __init__(self, d_model, num_encoders=6, feed_forward_dim=2048, dropout=0.1, heads=8):
         super(Encoder, self).__init__()
-        self.encoder_layer = TransformerEncoderLayer(d_model=d_model, nhead=heads, activation=F.gelu, dim_feedforward=feed_forward_dim, dropout=dropout)
+        self.encoder_layer = TransformerEncoderLayer(d_model=d_model, nhead=heads, activation=F.gelu, dim_feedforward=feed_forward_dim, dropout=dropout, batch_first=True)
         self.transformer_encoder = TransformerEncoder(self.encoder_layer, num_layers=num_encoders)
 
         self.norm1 = nn.LayerNorm(d_model)
@@ -102,14 +102,42 @@ class Trase(nn.Module):
         self.linear1 = nn.Linear(inp_emb_dim, d_model)
         self.layer_norm1 = nn.LayerNorm(d_model)
         self.activation1 = nn.GELU()
+
+        self.linear2 = nn.Linear(d_model, d_model)
+        self.layer_norm2 = nn.LayerNorm(d_model)
+        self.activation2 = nn.GELU()
+
         self.encoder = Encoder(d_model, num_encoders, dim_feed_forward, dropout=dropout, heads=heads)
+
+        self.linear3 = nn.Linear(d_model, d_model)
+        self.layer_norm3 = nn.LayerNorm(d_model)
+        self.activation3 = nn.GELU()
+
         self.noise_regressor = Noise_Regressor(d_model, device)
 
     def forward(self, x, min_orig_accel_norm):
         x = self.linear1(x)
         x = self.layer_norm1(x)
         x = self.activation1(x)
+
+        residual_1 = x
+
+        x = self.linear2(x)
+        x = self.layer_norm2(x)
+        x = self.activation2(x)
+
+        x = residual_1 + x
+
         encoded_states = self.encoder(x)
+
+        residual_2 = encoded_states
+
+        x = self.linear3(encoded_states)
+        x = self.layer_norm3(x)
+        x = self.activation3(x)
+
+        encoded_states = residual_2 + x
+
         kinematics, std = self.noise_regressor(encoded_states, min_orig_accel_norm)
 
         return kinematics, std # kinematics is essentially the mean

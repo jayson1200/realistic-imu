@@ -25,17 +25,17 @@ torch.cuda.empty_cache()
 torch.set_float32_matmul_precision('high')
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-EPOCHS = 240000
-LEARNING_RATE = 1e-6
-WEIGHT_DECAY = 0
+EPOCHS = 6000
+LEARNING_RATE = 1e-5
+WEIGHT_DECAY = 1.4
 data_path = "/home/meribejayson/Desktop/Projects/realistic-imu/data/total_capture_data"
 base_path = "/home/meribejayson/Desktop/Projects/realistic-imu/models"
-D_MODEL = 128
+D_MODEL = 512
 INPUT_EMBEDDING_DIM = 42
-NUM_ENCODERS = 1
-FEED_FORWARD_DIM = 512
-DROPOUT = 0.5
-HEADS = 1
+NUM_ENCODERS = 12
+FEED_FORWARD_DIM = 2048
+DROPOUT = 0.8
+HEADS = 8
 
 
 run = wandb.init(

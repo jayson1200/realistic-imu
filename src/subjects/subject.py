@@ -1,3 +1,5 @@
+from abc import abstractmethod
+
 import nimblephysics as nimble
 import numpy as np
 import torch
@@ -7,64 +9,21 @@ from scipy import signal
 
 import time
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-import os
-import pickle
 from typing import List
+import socket
 
-from scipy.spatial.transform import Rotation
 
-
-class DIPSubject:
-    def __init__(self, b3d_path, GEOMETRY_PATH):
+class Subject:
+    def __init__(self, b3d_path, GEOMETRY_PATH, nimble_body_nodes):
         self.subject = nimble.biomechanics.SubjectOnDisk(b3d_path)
         self.skeleton = self.subject.readSkel(processingPass=1, geometryFolder=GEOMETRY_PATH)
+        self.b3d_path = b3d_path
         self.subject_num = int(b3d_path.split("/")[-1].split(".")[0][1:])
         self.gui = nimble.NimbleGUI()
         self.GRAVITY = 9.80665
-        self.synthetic_component_names = [
-            "head",
-            "sternum",
-            "pelvis",
-            "lshoulder",
-            "rshoulder",
-            "lupperarm",
-            "rupperarm",
-            "llowerarm",
-            "rlowerarm",
-            "lupperleg",
-            "rupperleg",
-            "llowerleg",
-            "rlowerleg",
-            "lhand",
-            "rhand",
-            "lfoot",
-            "rfoot",
-        ]
+        self.nimble_body_nodes = nimble_body_nodes
 
-        # Corresponding bones to the sensors
-        self.skel_names = [
-            "head",
-            "thorax",
-            "pelvis",
-            "scapula_l",
-            "scapula_r",
-            "humerus_l",
-            "humerus_r",
-            "ulna_l",
-            "ulna_r",
-            "femur_l",
-            "femur_r",
-            "tibia_l",
-            "tibia_r",
-            "hand_l",
-            "hand_r",
-            "calcn_l",
-            "calcn_r"
-        ]
-
-        self.N_MEAS = len(self.skel_names) * 3
-        self.corresponding_imu_path = os.path.join(os.path.dirname(b3d_path), f"DIP_orig/S{self.subject_num}")
+        self.N_MEAS = len(self.nimble_body_nodes) * 3
         self.trial_map = {}
         self.joint_data_map = {}
         self.trial_imu_map = {} # real accelerations
@@ -80,22 +39,18 @@ class DIPSubject:
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        print(f"Processing DIP Subject {self.subject_num}")
-        self.create_trial_map()
-        self.get_joint_data()
-        self.get_real_imu_data()
+        self.setup_subject()
 
-        self.run_first_pass()
-        self.run_second_pass()
-
-
+    @abstractmethod
+    def setup_subject(self):
+        pass
 
     """
     The purpose of the first pass is to optimize out the world transforms of the real IMUs,
     """
     def run_first_pass(self):
         self.skeleton.setGravity(self.gravity_vec_one.astype(np.float64))
-        self.imus = {key : [(self.skeleton.getBodyNode(name), nimble.math.Isometry3.Identity()) for name in self.skel_names] for key in self.trial_map.keys()}
+        self.imus = {key : [(self.skeleton.getBodyNode(name), nimble.math.Isometry3.Identity()) for name in self.nimble_body_nodes] for key in self.trial_map.keys()}
 
         self.get_syn_imu_to_real_transformations()
         self.find_optimal_syn_transformations()
@@ -104,31 +59,9 @@ class DIPSubject:
     The purpose of the second pass is to use the world transform to add gravity back to the 
     real imu data and to recalculate the synthetic imu at the world transform of the real imu 
     """
+    @abstractmethod
     def run_second_pass(self):
-        self.skeleton.setGravity(-self.gravity_vec_two.astype(np.float64))
-
-        self.imus = {}
-        for key in self.trial_map.keys():
-            imu_list = []
-            for idx, name in enumerate(self.skel_names):
-                body_node = self.skeleton.getBodyNode(name)
-                transform = nimble.math.Isometry3.Identity()
-                transform.set_matrix(self.opt_trans[key]["body_node_to_imu"][idx])
-
-                imu_list.append((body_node, transform))
-            self.imus[key] = imu_list
-
-        self.get_syn_imu_to_real_transformations()
-
-        for trial in self.trial_map.keys():
-            imu_in_body_node  =  self.opt_trans[trial]["body_node_to_imu"][:, :-1, :-1]
-            body_node_in_world = self.opt_trans[trial]["world_to_body_node"][:, :, :-1, :-1]
-
-            world_to_imu_transform = einsum(imu_in_body_node, body_node_in_world, "imu j i, seq imu k j -> seq imu i k")
-            gravity_vec_in_imu_frame = einsum(world_to_imu_transform, self.gravity_vec_two, "seq imu i k, k j-> seq imu i")
-
-            self.trial_imu_map[trial]["acc"] = gravity_vec_in_imu_frame - self.trial_imu_map[trial]["acc"]
-
+        pass
 
 
     def create_trial_map(self):
@@ -156,23 +89,11 @@ class DIPSubject:
                 "joint_acc": signal.filtfilt(self.b, self.a, joint_acc_raw, axis=1),
             }
 
-
+    @abstractmethod
     def get_real_imu_data(self):
-        for key, frames in self.trial_map.items():
-            with open(os.path.join(self.corresponding_imu_path, f"{key}.pkl"), "rb") as file:
-                real_data = pickle.load(file, encoding="latin1")["imu"]
-                acc = real_data[:, :, 9:12]
-                acc = self.fill_nans(acc)
-
-            self.num_trials = len(self.joint_data_map.keys())
-
-            self.trial_imu_map[key] = {
-                "acc": acc,
-            }
+        pass
 
     def generate_nimble_visualization(self, trial_name):
-        self.gui.serve(8080)
-
         def renderBasis(key, p, R, colors: List[List[float]] = None):
             if colors is None:
                 colors = [[1., 0., 0., 1.], [0., 1., 0., 1.], [0., 0., 1., 1.]]
@@ -181,12 +102,19 @@ class DIPSubject:
             self.gui.nativeAPI().createLine(key + '_y', [p, R[:, 1] / 10 + p], colors[1], width=[1.])
             self.gui.nativeAPI().createLine(key + '_z', [p, R[:, 2] / 10 + p], colors[2], width=[1.])
 
+        def find_free_port():
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('', 0))  # Bind to a free port assigned by the OS
+                return s.getsockname()[1]  # Return the port number
+
+        self.gui.serve(find_free_port())
+
         transform_dict = self.opt_trans[trial_name]
 
         for t in tqdm(range(self.joint_data_map[trial_name]["joint_angles"].shape[1])):
             self.skeleton.setPositions(self.joint_data_map[trial_name]["joint_angles"][:, t])
 
-            for imu_num in range(len(self.skel_names)):
+            for imu_num in range(len(self.nimble_body_nodes)):
                 # Shape: (Sequence Length) x (IMUs) x (Rows) x (Cols)
                 body_node_in_world = transform_dict["world_to_body_node"]
 
@@ -224,8 +152,8 @@ class DIPSubject:
                 curr_syn_angular_vel[:, t] = self.skeleton.getGyroReadings(self.imus[trial_name])
 
 
-            curr_syn_acc = curr_syn_acc.T.reshape(-1, 17, 3)
-            curr_syn_angular_vel = curr_syn_angular_vel.T.reshape(-1, 17, 3)
+            curr_syn_acc = curr_syn_acc.T.reshape(-1, len(self.nimble_body_nodes), 3)
+            curr_syn_angular_vel = curr_syn_angular_vel.T.reshape(-1, len(self.nimble_body_nodes), 3)
 
             curr_syn_angular_accel = np.zeros_like(curr_syn_angular_vel)
 
@@ -262,13 +190,13 @@ class DIPSubject:
 
     def get_world_transforms(self, trial_name):
         num_time_steps = self.joint_data_map[trial_name]["joint_angles"].shape[1]
-        world_transform = np.empty((num_time_steps, 17, 4, 4))
+        world_transform = np.empty((num_time_steps, len(self.nimble_body_nodes), 4, 4))
 
 
         for t in range(num_time_steps):
             self.skeleton.setPositions(self.joint_data_map[trial_name]["joint_angles"][:, t])
 
-            for idx, body_node_name in enumerate(self.skel_names):
+            for idx, body_node_name in enumerate(self.nimble_body_nodes):
                 world_transform[t, idx, :, :] = self.skeleton.getBodyNode(body_node_name).getWorldTransform().matrix()
 
         return world_transform
@@ -279,10 +207,10 @@ class DIPSubject:
             num_t_steps = syn_imu["acc"].shape[0]
             losses = []
 
-            real_imu_data = torch.tensor(self.trial_imu_map[trial_name]["acc"], device=self.device, dtype=torch.float32)
-            syn_imu_data = torch.tensor(syn_imu["acc"], device=self.device, dtype=torch.float32)
-            syn_imu_angular_vel_data = torch.tensor(syn_imu["angular_vel"], device=self.device, dtype=torch.float32)
-            syn_imu_angular_accel_data = torch.tensor(syn_imu["angular_accel"], device=self.device, dtype=torch.float32)
+            real_imu_data = torch.from_numpy(self.trial_imu_map[trial_name]["acc"]).to(device=self.device, dtype=torch.float32)
+            syn_imu_data = torch.from_numpy(syn_imu["acc"]).to(device=self.device, dtype=torch.float32)
+            syn_imu_angular_vel_data = torch.from_numpy(syn_imu["angular_vel"]).to(device=self.device, dtype=torch.float32)
+            syn_imu_angular_accel_data = torch.from_numpy(syn_imu["angular_accel"]).to(device=self.device, dtype=torch.float32)
 
             real_imu_normed = torch.linalg.norm(real_imu_data, dim=-1)
             syn_imu_data_normed  = torch.linalg.norm(syn_imu_data, dim=-1)
@@ -294,8 +222,8 @@ class DIPSubject:
             trial_body_node_world_transforms = torch.tensor(self.get_world_transforms(trial_name), device=self.device, dtype=torch.float32)
 
 
-            radius_mat = torch.rand(17, 3, dtype=torch.float32, device=self.device).requires_grad_()
-            unnormed_quaternions = torch.rand(17, 4, dtype=torch.float32, device=self.device).requires_grad_()
+            radius_mat = torch.rand(len(self.nimble_body_nodes), 3, dtype=torch.float32, device=self.device).requires_grad_()
+            unnormed_quaternions = torch.rand(len(self.nimble_body_nodes), 4, dtype=torch.float32, device=self.device).requires_grad_()
 
             optimizer = torch.optim.AdamW([{'params': [radius_mat], 'weight_decay': 0},
                                            {'params': [unnormed_quaternions], 'weight_decay': 0}

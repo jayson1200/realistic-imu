@@ -48,8 +48,8 @@ UIP_IMU_LOCATIONS = [
 ]
 
 NIMBLE_BODY_NODES_UIP = [
-    "ulna_l",
-    "ulna_r",
+    "hand_l",
+    "hand_r",
     "tibia_l",
     "tibia_r",
     "head",
@@ -84,6 +84,6 @@ NIMBLE_BODY_NODES_TOTAL_CAPTURE = [
     "head",
     "humerus_l",
     "humerus_r",
-    "ulna_l",
-    "ulna_r"
+    "hand_l",
+    "hand_r"
 ]

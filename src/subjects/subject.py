@@ -11,6 +11,7 @@ import time
 from tqdm import tqdm
 from typing import List
 import socket
+from utils.Minimizer import Minimizer
 
 
 class Subject:
@@ -35,7 +36,10 @@ class Subject:
 
         self.fs = 60
         self.cutoff =  8
-        self.b, self.a = signal.butter(10, self.cutoff / (self.fs / 2), btype='low')
+        self.b, self.a = signal.butter(10, self.cutoff / (self.fs / 2), btype='lowpass')
+
+        self.minimizer_regularization = 1000
+        self.minimizer_smoothing = 2 / ((1/60) ** 2)
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -77,17 +81,66 @@ class Subject:
             else:
                 self.trial_map[key] = curr_trial
 
+    def process_joint_angles(self, joint_angles, std_cutoff=2.0):
+        processed = joint_angles.copy()
+
+        for joint_idx in range(joint_angles.shape[0]):
+            # Calculate mean and std for current joint
+            joint_mean = np.mean(joint_angles[joint_idx])
+            joint_std = np.std(joint_angles[joint_idx])
+
+            # Create mask for outliers
+            outlier_mask = np.abs(joint_angles[joint_idx] - joint_mean) > (std_cutoff * joint_std)
+
+            if np.any(outlier_mask):
+                # Get indices where there are outliers
+                outlier_indices = np.where(outlier_mask)[0]
+
+                # Create interpolation function using non-outlier values
+                valid_indices = np.where(~outlier_mask)[0]
+                valid_values = joint_angles[joint_idx, valid_indices]
+
+                # Interpolate outlier values
+                processed[joint_idx, outlier_indices] = np.interp(
+                    outlier_indices,
+                    valid_indices,
+                    valid_values
+                )
+
+        return processed
+
     def get_joint_data(self):
         for key, frames in self.trial_map.items():
             joint_angles_raw = np.vstack([frame.processingPasses[0].pos for frame in frames]).T
             joint_vel_raw = np.vstack([frame.processingPasses[0].vel for frame in frames]).T
             joint_acc_raw = np.vstack([frame.processingPasses[0].acc for frame in frames]).T
 
+
+            minimizer = Minimizer(joint_angles_raw.shape[1], self.minimizer_regularization, self.minimizer_smoothing)
+
+
+            """
+            self.joint_data_map[key] = {
+                "joint_angles": minimizer.minimize(joint_angles_raw),
+                "joint_vel": minimizer.minimize(joint_vel_raw),
+                "joint_acc": minimizer.minimize(joint_acc_raw),
+            }
+            """
+
+            self.joint_data_map[key] = {
+                "joint_angles": minimizer.minimize(joint_angles_raw),
+                "joint_vel": self.process_joint_angles(joint_vel_raw),
+                "joint_acc": self.process_joint_angles(joint_acc_raw),
+            }
+
+            """
             self.joint_data_map[key] = {
                 "joint_angles": signal.filtfilt(self.b, self.a, joint_angles_raw, axis=1),
                 "joint_vel": signal.filtfilt(self.b, self.a, joint_vel_raw, axis=1),
                 "joint_acc": signal.filtfilt(self.b, self.a, joint_acc_raw, axis=1),
             }
+            """
+
 
     @abstractmethod
     def get_real_imu_data(self):
@@ -247,7 +300,7 @@ class Subject:
                 real_imu_velocity = torch.linalg.cross(syn_imu_angular_vel_data, radius_mat_batched, dim = -1)
                 real_imu_centripetal_accel = torch.linalg.cross(syn_imu_angular_vel_data, real_imu_velocity, dim = -1)
 
-                real_imu_in_syn_frame = einsum(rotation_transforms, real_imu_data, "imu i j, seq imu i -> seq imu j") + real_imu_linear_accel + real_imu_centripetal_accel
+                real_imu_in_syn_frame = einsum(rotation_transforms, real_imu_data, "imu i j, seq imu j -> seq imu i") + real_imu_linear_accel + real_imu_centripetal_accel
 
                 residual = real_imu_in_syn_frame - syn_imu_data
                 loss = torch.norm(residual * high_signal_filter, p=1, dim=-1).mean()

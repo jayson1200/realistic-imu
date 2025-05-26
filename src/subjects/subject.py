@@ -13,7 +13,7 @@ from typing import List
 import socket
 from utils.Minimizer import Minimizer
 
-from .constants import NIMBLE_BODY_NODES_ALL
+from .constants import NIMBLE_BODY_NODES_ALL, NIMBLE_BODY_NODE_WEIGHTS
 
 
 class Subject:
@@ -368,6 +368,7 @@ class Subject:
                 "inputs": np.concatenate(inputs, axis=-1),
                 "accelerations_output": np.concatenate(accelerations_output, axis=-1),
                 "angular_velocities_output": np.concatenate(angular_velocities_output, axis=-1) if len(angular_velocities_output) > 0 else None,
+                "weights": NIMBLE_BODY_NODE_WEIGHTS ,
                 "mask": mask,
                 "trial_name": trial,
                 "subject_num": self.subject_num,

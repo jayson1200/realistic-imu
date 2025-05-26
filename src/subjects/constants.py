@@ -107,3 +107,14 @@ NIMBLE_BODY_NODES_ALL = [
     'calcn_l', 
     'calcn_r'
 ]
+
+_sets = [
+    set(NIMBLE_BODY_NODES_DIP),
+    set(NIMBLE_BODY_NODES_UIP),
+    set(NIMBLE_BODY_NODES_TOTAL_CAPTURE),
+]
+_counts = [sum(node in s for s in _sets) for node in NIMBLE_BODY_NODES_ALL]
+_invs = [(1/c if c else 0) for c in _counts]
+_total = sum(_invs)
+NIMBLE_BODY_NODE_WEIGHTS = [_inv / _total for _inv in _invs]
+del _sets, _counts, _invs, _total

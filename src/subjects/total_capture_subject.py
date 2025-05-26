@@ -54,9 +54,6 @@ class TotalCaptureSubject(Subject):
                                                  numFramesToRead=self.subject.getTrialLength(i),
                                                  includeProcessingPasses=True)
 
-            if key[0] == 'a':
-                key =  'A' + key[1:]
-
             if key in self.trial_map:
                 self.trial_map[key].extend(curr_trial)
             else:
@@ -71,7 +68,7 @@ class TotalCaptureSubject(Subject):
             for idx, name in enumerate(self.nimble_body_nodes):
                 body_node = self.skeleton.getBodyNode(name)
                 transform = nimble.math.Isometry3.Identity()
-                transform.set_matrix(self.opt_trans[key]["body_node_to_imu"][idx])
+                transform.set_matrix(self.opt_trans[key]["imu_in_body_node_frame"][idx])
 
                 imu_list.append((body_node, transform))
             self.imus[key] = imu_list
@@ -88,66 +85,127 @@ class TotalCaptureSubject(Subject):
         self.find_optimal_syn_transformations()
 
     # Overide
+
     def sync_real_syn_imu_data(self):
+        """
+        Synchronizes real and synthetic IMU data for each trial.
+
+        The synchronization is based on maximizing the cross-correlation between
+        the magnitudes of acceleration and angular velocity of a specific sensor
+        (index 5, assumed to be the left foot).
+
+        The method updates self.trial_imu_map, self.syn_imu, and
+        self.joint_data_map with the sliced, synchronized data.
+        """
         for key in self.trial_map.keys():
-            # Take norm along last dimension for both acc and ang_vel
-            real_imu_acc = np.linalg.norm(self.trial_imu_map[key]["acc"], axis=-1)
-            syn_imu_acc = np.linalg.norm(self.syn_imu[key]["acc"], axis=-1)
-            
-            real_imu_ang_vel = np.linalg.norm(self.trial_imu_map[key]["ang_vel"], axis=-1)
-            syn_imu_ang_vel = np.linalg.norm(self.syn_imu[key]["angular_vel"], axis=-1)
+            # Ensure data exists for the key
+            if key not in self.trial_imu_map or key not in self.syn_imu or \
+               key not in self.joint_data_map:
+                print(f"Warning: Missing data for key {key}. Skipping synchronization.")
+                continue
+            if 'acc' not in self.trial_imu_map[key] or \
+               'ang_vel' not in self.trial_imu_map[key] or \
+               'acc' not in self.syn_imu[key] or \
+               'angular_vel' not in self.syn_imu[key]:
+                print(f"Warning: Missing 'acc' or 'ang_vel'/'angular_vel' for key {key}. Skipping.")
+                continue
 
-            noisy_ang_vel_mask = (syn_imu_ang_vel < 50)
-            noisy_acc_mask = (syn_imu_acc < 20)
 
-            noisy_ang_vel_mask = noisy_ang_vel_mask.astype(np.float32)
-            noisy_acc_mask = noisy_acc_mask.astype(np.float32)
+            # Compute magnitudes (T, sensors)
+            # Ensure data has at least 3 dimensions for axis=-1 to be valid for typical IMU (frames, sensors, axes)
+            # And at least 6 sensors for index 5 to be valid.
+            if self.trial_imu_map[key]['acc'].ndim < 2 or self.trial_imu_map[key]['acc'].shape[1] <= 5 or \
+               self.syn_imu[key]['acc'].ndim < 2 or self.syn_imu[key]['acc'].shape[1] <= 5 or \
+               self.trial_imu_map[key]['ang_vel'].ndim < 2 or self.trial_imu_map[key]['ang_vel'].shape[1] <= 5 or \
+               self.syn_imu[key]['angular_vel'].ndim < 2 or self.syn_imu[key]['angular_vel'].shape[1] <= 5:
+                print(f"Warning: Insufficient dimensions or sensors for key {key} for norm calculation. Skipping.")
+                continue
 
-            correlations = []
-            for imu_num in range(len(self.nimble_body_nodes)):
-                acc_correlations = signal.correlate(real_imu_acc[imu_num] , syn_imu_acc[imu_num] * noisy_acc_mask[imu_num], mode="full")
-                ang_vel_correlations = signal.correlate(real_imu_ang_vel[imu_num], syn_imu_ang_vel[imu_num] * noisy_ang_vel_mask[imu_num], mode="full")
+            real_imu_acc = np.linalg.norm(self.trial_imu_map[key]['acc'], axis=-1)
+            syn_imu_acc  = np.linalg.norm(self.syn_imu[key]['acc'], axis=-1)
+            real_imu_ang = np.linalg.norm(self.trial_imu_map[key]['ang_vel'], axis=-1)
+            syn_imu_ang  = np.linalg.norm(self.syn_imu[key]['angular_vel'], axis=-1)
 
-                correlations.append(acc_correlations + ang_vel_correlations)
+            # Masks for correlation (unused for slicing length in current form, but kept from original)
+            # Ensure masks are based on the correct sensor data if syn_imu_acc/ang could be empty
+            if syn_imu_acc.shape[0] == 0 or syn_imu_ang.shape[0] == 0:
+                print(f"Warning: Synthetic IMU data for key {key} has zero length. Skipping correlation.")
+                # Set empty slices or handle as an error
+                i_real = slice(0,0)
+                i_syn = slice(0,0)
+            elif real_imu_acc.shape[0] == 0 or real_imu_ang.shape[0] == 0:
+                print(f"Warning: Real IMU data for key {key} has zero length. Skipping correlation.")
+                i_real = slice(0,0)
+                i_syn = slice(0,0)
+            else:
+                mask_acc = np.ones_like(syn_imu_acc[:, 5], dtype=np.float32) # Mask for sensor 5
+                mask_ang = np.ones_like(syn_imu_ang[:, 5], dtype=np.float32) # Mask for sensor 5
 
-            correlations = np.sum(np.stack(correlations), axis=0)
+                def raw_corr(a, b, m):
+                    # Ensure a and b are 1D for correlate
+                    if a.ndim > 1 or b.ndim > 1 or m.ndim > 1:
+                         raise ValueError("Inputs to raw_corr must be 1D arrays.")
+                    return np.correlate(a, b * m, mode='full')
 
-            plt.figure(figsize=(10, 5))
-            plt.plot(correlations)
-            plt.title(f'Cross-correlation for trial {key}')
-            plt.xlabel('Lag')
-            plt.ylabel('Correlation')
-            plt.show()
+                # Use sensor index 5 which corresponds to the left foot for alignment
+                corr_acc   = raw_corr(real_imu_acc[:, 5], syn_imu_acc[:, 5], mask_acc)
+                corr_ang   = raw_corr(real_imu_ang[:, 5], syn_imu_ang[:, 5], mask_ang)
+                corr_total = corr_acc + corr_ang
 
-            optimal_idx = np.argmax(correlations)
-            print(optimal_idx)
-            
-            real_acc_length = real_imu_acc.shape[0]
-            syn_acc_length = syn_imu_acc.shape[0]
-            
-            if real_acc_length > syn_acc_length:
-                trial_imu_data = {
-                    "acc": self.trial_imu_map[key]["acc"][optimal_idx:optimal_idx + syn_acc_length],
-                    "ang_vel": self.trial_imu_map[key]["ang_vel"][optimal_idx:optimal_idx + syn_acc_length],
-                    "magnetometer": self.trial_imu_map[key]["magnetometer"][optimal_idx:optimal_idx + syn_acc_length]
-                }
+                if len(corr_total) == 0: # Should not happen if inputs are non-empty
+                    best_idx = 0
+                else:
+                    best_idx   = np.argmax(corr_total)
 
-                self.trial_imu_map[key].update(trial_imu_data)
-            elif real_acc_length < syn_acc_length:
-                raise NotImplementedError("Havent implemented this yet")
-                syn_imu_data = {
-                    "acc": self.syn_imu[key]["acc"][optimal_idx:optimal_idx + real_acc_length],
-                    "angular_vel": self.syn_imu[key]["angular_vel"][optimal_idx:optimal_idx + real_acc_length],
-                    "angular_accel": self.syn_imu[key]["angular_accel"][optimal_idx:optimal_idx + real_acc_length]
-                }
-                joint_data = {
-                    "joint_angles": self.joint_data_map[key]["joint_angles"][:, optimal_idx:optimal_idx + real_acc_length],
-                    "joint_vel": self.joint_data_map[key]["joint_vel"][:, optimal_idx:optimal_idx + real_acc_length],
-                    "joint_acc": self.joint_data_map[key]["joint_acc"][:, optimal_idx:optimal_idx + real_acc_length]
-                }
 
-                self.syn_imu[key].update(syn_imu_data)
-                self.joint_data_map[key].update(joint_data)
+                # Number of frames and computed lag
+                n_real = real_imu_acc.shape[0]
+                n_syn  = syn_imu_acc.shape[0]
+                lag    = best_idx - (n_syn - 1)
+
+                real_start = max(0, lag)
+                real_end = min(n_real, n_syn + lag)
+
+                syn_start = max(0, -lag) # Equivalent to real_start - lag
+                syn_end = min(n_syn, n_real - lag) # Equivalent to real_end - lag
+
+                if real_end < real_start: real_end = real_start
+                if syn_end < syn_start: syn_end = syn_start
+
+                i_real = slice(real_start, real_end)
+                i_syn  = slice(syn_start, syn_end)
+
+            # Apply slices
+            # Need to handle cases where original data might be missing these keys
+            syn_data_updates = {}
+            if 'acc' in self.syn_imu[key]:
+                syn_data_updates['acc'] = self.syn_imu[key]['acc'][i_syn]
+            if 'angular_vel' in self.syn_imu[key]:
+                syn_data_updates['angular_vel'] = self.syn_imu[key]['angular_vel'][i_syn]
+            if 'angular_accel' in self.syn_imu[key]: # This was in original code
+                 syn_data_updates['angular_accel'] = self.syn_imu[key]['angular_accel'][i_syn]
+
+
+            trial_data_updates = {}
+            if 'acc' in self.trial_imu_map[key]:
+                trial_data_updates['acc'] = self.trial_imu_map[key]['acc'][i_real]
+            if 'ang_vel' in self.trial_imu_map[key]:
+                trial_data_updates['ang_vel'] = self.trial_imu_map[key]['ang_vel'][i_real]
+            if 'magnetometer' in self.trial_imu_map[key]: # This was in original code
+                trial_data_updates['magnetometer'] = self.trial_imu_map[key]['magnetometer'][i_real]
+
+            joint_data_updates = {}
+            # Joint data is (features, time_frames)
+            if 'joint_angles' in self.joint_data_map[key]:
+                 joint_data_updates['joint_angles'] = self.joint_data_map[key]['joint_angles'][:, i_syn]
+            if 'joint_vel' in self.joint_data_map[key]:
+                 joint_data_updates['joint_vel'] = self.joint_data_map[key]['joint_vel'][:, i_syn]
+            if 'joint_acc' in self.joint_data_map[key]:
+                 joint_data_updates['joint_acc'] = self.joint_data_map[key]['joint_acc'][:, i_syn]
+
+            self.trial_imu_map[key].update(trial_data_updates)
+            self.syn_imu[key].update(syn_data_updates)
+            self.joint_data_map[key].update(joint_data_updates)
 
 
 
@@ -276,7 +334,7 @@ class TotalCaptureSubject(Subject):
                     (syn_imu_angular_vel_data - real_imu_ang_vel_in_syn_frame) * high_signal_filter_angv, p=1,
                     dim=-1).mean()
 
-                loss = 0.1 * acc_loss + 0.9 * ang_vel_loss
+                loss = acc_loss + ang_vel_loss
 
                 losses.append(loss.item())
                 loss.backward()
@@ -288,9 +346,11 @@ class TotalCaptureSubject(Subject):
 
             radius_mat_numpy = radius_mat.detach().cpu()
 
+            imu_pos_and_quat_body_frame = torch.cat([radius_mat_numpy, current_quaternions], dim=-1)
             self.opt_trans[trial_name] = {
-                "body_node_to_imu": th.SE3(x_y_z_quaternion=torch.cat([-radius_mat_numpy, current_quaternions], dim=-1), dtype=torch.float32).to_matrix().detach().cpu().numpy(),
-                "world_to_body_node": trial_body_node_world_transforms.detach().cpu().numpy(),
+                "imu_in_body_node_frame": th.SE3(x_y_z_quaternion=imu_pos_and_quat_body_frame, dtype=torch.float32).to_matrix().detach().cpu().numpy(),
+                "imu_in_body_node_frame_quat": imu_pos_and_quat_body_frame,
+                "body_node_in_world_frame": trial_body_node_world_transforms.detach().cpu().numpy(),
                 "losses": losses
             }
 
@@ -301,9 +361,10 @@ class TotalCaptureSubject(Subject):
             joint_vel_raw = np.vstack([frame.processingPasses[0].vel for frame in frames]).T
             joint_acc_raw = np.vstack([frame.processingPasses[0].acc for frame in frames]).T
 
+
+            # minimizer = Minimizer(joint_angles_raw.shape[1], self.minimizer_regularization, self.minimizer_smoothing)
+
             """
-            minimizer = Minimizer(joint_angles_raw.shape[1], self.minimizer_regularization, self.minimizer_smoothing)
-            
             self.joint_data_map[key] = {
                 "joint_angles": minimizer.minimize(joint_angles_raw),
                 "joint_vel": minimizer.minimize(joint_vel_raw),
@@ -311,11 +372,13 @@ class TotalCaptureSubject(Subject):
             }
             """
 
+
             self.joint_data_map[key] = {
                 "joint_angles":  joint_angles_raw,
                 "joint_vel": self.process_joint_angles(joint_vel_raw, std_cutoff=1.5),
                 "joint_acc": self.process_joint_angles(joint_acc_raw, std_cutoff=1.5),
             }
+
 
             """
             self.joint_data_map[key] = {

@@ -35,7 +35,7 @@ class UIPSubject(Subject):
             for idx, name in enumerate(self.nimble_body_nodes):
                 body_node = self.skeleton.getBodyNode(name)
                 transform = nimble.math.Isometry3.Identity()
-                transform.set_matrix(self.opt_trans[key]["body_node_to_imu"][idx])
+                transform.set_matrix(self.opt_trans[key]["imu_in_body_node_frame"][idx])
 
                 imu_list.append((body_node, transform))
             self.imus[key] = imu_list
@@ -43,10 +43,11 @@ class UIPSubject(Subject):
         self.get_syn_imu_to_real_transformations()
 
         for trial in self.trial_map.keys():
-            imu_in_body_node  =  self.opt_trans[trial]["body_node_to_imu"][:, :-1, :-1]
-            body_node_in_world = self.opt_trans[trial]["world_to_body_node"][:, :, :-1, :-1]
+            imu_in_body_node  =  self.opt_trans[trial]["imu_in_body_node_frame"][:, :-1, :-1]
+            body_node_in_world = self.opt_trans[trial]["body_node_in_world_frame"][:, :, :-1, :-1]
 
             world_to_imu_transform = einsum(imu_in_body_node, body_node_in_world, "imu j i, seq imu k j -> seq imu i k")
             gravity_vec_in_imu_frame = einsum(world_to_imu_transform, self.gravity_vec_two, "seq imu i k, k j-> seq imu i")
 
             self.trial_imu_map[trial]["acc"] = gravity_vec_in_imu_frame - self.trial_imu_map[trial]["acc"]
+

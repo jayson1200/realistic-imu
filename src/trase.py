@@ -1,18 +1,41 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from torch.nn.functional import smooth_l1_loss
+from x_transformers import Encoder as XTransformerEncoder
+
 
 NUM_OF_IMUS = 13
 NUM_OF_NOISE_PARAMS = 10
 
-class Encoder(nn.Module):
-    def __init__(self, d_model, num_encoders=6, feed_forward_dim=2048, dropout=0.1, heads=8):
-        super(Encoder, self).__init__()
-        self.encoder_layer = TransformerEncoderLayer(d_model=d_model, nhead=heads, activation=F.gelu, dim_feedforward=feed_forward_dim, dropout=dropout, batch_first=True)
-        self.transformer_encoder = TransformerEncoder(self.encoder_layer, num_layers=num_encoders)
 
+class Encoder(nn.Module):
+    def __init__(
+            self,
+            d_model,
+            num_encoders: int = 6,
+            transformer_ff: int = 2048,
+            dropout: float = 0.1,
+            heads: int = 8,
+            rotary_xpos_scale_base: int = 1024,
+            max_seq_len: int = 54000, # This is 15 minutes at 60 hz
+
+    ):
+        super().__init__()
+        # x-transformers encoder block with RoPE + XPOS
+        self.transformer_encoder = XTransformerEncoder(
+            dim                   = d_model,
+            depth                 = num_encoders,
+            heads                 = heads,
+            mlp_dim               = transformer_ff,
+            dropout               = dropout,
+            rotary_pos_emb        = True,    # enable classic RoPE
+            rotary_xpos           = True,    # enable XPOS for extrapolation
+            rotary_xpos_scale_base= rotary_xpos_scale_base,
+            max_seq_len           = max_seq_len,
+        )
+
+        # follow same post‐attention feed‑forward & norms as before
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.feed_forward = nn.Sequential(
@@ -22,15 +45,18 @@ class Encoder(nn.Module):
         )
 
     def forward(self, x):
+        # x: (batch, seq_len, d_model)
         residual = x
 
-        x_norm = self.norm1(x)
-        x_trans = self.transformer_encoder(x_norm)
+        # 1) layer‑norm → x‑transformers encoder (self‑attention + FFN)
+        x_norm     = self.norm1(x)
+        x_encoded  = self.transformer_encoder(x_norm)
 
-        x_norm_2 = self.norm2(x_trans)
-        ff_out = self.feed_forward(x_norm_2)
-
+        # 2) post‑norm + our custom FF block + residual
+        x_norm2 = self.norm2(x_encoded)
+        ff_out  = self.feed_forward(x_norm2)
         return ff_out + residual
+
 
 
 class Noise_Regressor(nn.Module):

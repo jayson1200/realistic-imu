@@ -87,3 +87,23 @@ NIMBLE_BODY_NODES_TOTAL_CAPTURE = [
     "hand_l",
     "hand_r"
 ]
+
+NIMBLE_BODY_NODES_ALL = [
+    'head', 
+    'thorax', 
+    'pelvis', 
+    'scapula_l', 
+    'scapula_r', 
+    'humerus_l', 
+    'humerus_r', 
+    'ulna_l', 
+    'ulna_r', 
+    'femur_l', 
+    'femur_r', 
+    'tibia_l', 
+    'tibia_r', 
+    'hand_l', 
+    'hand_r', 
+    'calcn_l', 
+    'calcn_r'
+]

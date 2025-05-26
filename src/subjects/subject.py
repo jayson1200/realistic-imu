@@ -13,16 +13,20 @@ from typing import List
 import socket
 from utils.Minimizer import Minimizer
 
+from .constants import NIMBLE_BODY_NODES_ALL
+
 
 class Subject:
     def __init__(self, b3d_path, GEOMETRY_PATH, nimble_body_nodes):
         self.subject = nimble.biomechanics.SubjectOnDisk(b3d_path)
         self.skeleton = self.subject.readSkel(processingPass=1, geometryFolder=GEOMETRY_PATH)
+
         self.b3d_path = b3d_path
         self.subject_num = int(b3d_path.split("/")[-1].split(".")[0][1:])
         self.gui = nimble.NimbleGUI()
         self.GRAVITY = 9.80665
         self.nimble_body_nodes = nimble_body_nodes
+        self.index_map = {node: idx for idx, node in enumerate(nimble_body_nodes)}
 
         self.N_MEAS = len(self.nimble_body_nodes) * 3
         self.trial_map = {}
@@ -70,7 +74,8 @@ class Subject:
 
     def create_trial_map(self):
         for i in range(self.subject.getNumTrials()):
-            key = self.subject.getTrialOriginalName(i).split("_")[0]
+            nimble_trial_name = self.subject.getTrialName(i)
+            key = self.subject.getTrialOriginalName(i).split("segment")[0]
             curr_trial = self.subject.readFrames(trial=i,
                                                  startFrame=0,
                                                  numFramesToRead=self.subject.getTrialLength(i),
@@ -169,10 +174,10 @@ class Subject:
 
             for imu_num in range(len(self.nimble_body_nodes)):
                 # Shape: (Sequence Length) x (IMUs) x (Rows) x (Cols)
-                body_node_in_world = transform_dict["world_to_body_node"]
+                body_node_in_world = transform_dict["body_node_in_world_frame"]
 
                 # Shape: (IMUs) x (Rows) x (Cols)
-                imu_in_body_node = transform_dict["body_node_to_imu"]
+                imu_in_body_node = transform_dict["imu_in_body_node_frame"]
 
                 # Grab the heads
                 body_node_in_world = body_node_in_world[t, imu_num, :, :]
@@ -315,8 +320,60 @@ class Subject:
 
             radius_mat_numpy = radius_mat.detach().cpu()
 
+            imu_pos_and_quat_body_frame = torch.cat([radius_mat_numpy, current_quaternions], dim=-1)
             self.opt_trans[trial_name] = {
-                "body_node_to_imu": th.SE3(x_y_z_quaternion=torch.cat([-radius_mat_numpy, current_quaternions], dim=-1), dtype=torch.float32).to_matrix().detach().cpu().numpy(),
-                "world_to_body_node": trial_body_node_world_transforms.detach().cpu().numpy(),
+                "imu_in_body_node_frame": th.SE3(x_y_z_quaternion=imu_pos_and_quat_body_frame, dtype=torch.float32).to_matrix().detach().cpu().numpy(),
+                "imu_in_body_node_frame_quat": imu_pos_and_quat_body_frame,
+                "body_node_in_world_frame": trial_body_node_world_transforms.detach().cpu().numpy(),
                 "losses": losses
             }
+
+    def get_subject_data(self):
+        trials = []
+
+        for trial in self.opt_trans.keys():
+            inputs = []
+            mask = []
+            accelerations_output = []
+            angular_velocities_output = []
+
+            time_steps = self.syn_imu[trial]["acc"].shape[0]
+
+            for node in NIMBLE_BODY_NODES_ALL:
+                if node in self.index_map:
+                    inputs.append(self.syn_imu[trial]["acc"][:, self.index_map[node], :])
+                    inputs.append(self.syn_imu[trial]["angular_vel"][:, self.index_map[node], :])
+                    inputs.append(self.syn_imu[trial]["angular_accel"][:, self.index_map[node], :])
+
+                    repeated_imu_in_body_node_transforms = repeat(self.opt_trans[trial]["imu_in_body_node_frame_quat"][self.index_map[node]], "c -> seq c", seq=time_steps)
+                    inputs.append(repeated_imu_in_body_node_transforms)
+
+                    accelerations_output.append(self.trial_imu_map[trial]["acc"][:, self.index_map[node], :])
+
+                    if "ang_vel" in self.trial_imu_map[trial]:
+                        angular_velocities_output.append(self.trial_imu_map[trial]["ang_vel"][:, self.index_map[node], :])
+
+                    mask.extend([1] * 15)
+                else:
+                    inputs.append(np.zeros((time_steps, 15)))
+                    accelerations_output.append(np.zeros((time_steps, 3)))
+
+                    if "ang_vel" in self.trial_imu_map[trial]:
+                        angular_velocities_output.append(np.zeros((time_steps, 3)))
+
+                    mask.extend([0] * 15)
+
+
+            trials.append({
+                "inputs": np.concatenate(inputs, axis=-1),
+                "accelerations_output": np.concatenate(accelerations_output, axis=-1),
+                "angular_velocities_output": np.concatenate(angular_velocities_output, axis=-1) if len(angular_velocities_output) > 0 else None,
+                "mask": mask,
+                "trial_name": trial,
+                "subject_num": self.subject_num,
+                "dataset": self.__class__.__name__
+            })
+
+        return trials
+
+

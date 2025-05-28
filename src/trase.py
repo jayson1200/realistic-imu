@@ -2,37 +2,40 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.functional import smooth_l1_loss
-from x_transformers import Encoder as XTransformerEncoder
+from x_transformers import Encoder as XEncoder
 
 
-NUM_OF_IMUS = 13
-NUM_OF_NOISE_PARAMS = 10
+NUM_OF_IMU_AXES = 72
+NUM_OF_NOISE_PARAMS = 12
 
 
 class Encoder(nn.Module):
     def __init__(
             self,
             d_model,
-            num_encoders: int = 6,
+            num_encoders: int = 4,
             transformer_ff: int = 2048,
             dropout: float = 0.1,
             heads: int = 8,
             rotary_xpos_scale_base: int = 1024,
-            max_seq_len: int = 54000, # This is 15 minutes at 60 hz
-
     ):
         super().__init__()
-        # x-transformers encoder block with RoPE + XPOS
-        self.transformer_encoder = XTransformerEncoder(
-            dim                   = d_model,
-            depth                 = num_encoders,
-            heads                 = heads,
-            mlp_dim               = transformer_ff,
-            dropout               = dropout,
-            rotary_pos_emb        = True,    # enable classic RoPE
-            rotary_xpos           = True,    # enable XPOS for extrapolation
-            rotary_xpos_scale_base= rotary_xpos_scale_base,
-            max_seq_len           = max_seq_len,
+
+        # After I build this I need to figure out how useful long context is to the model
+        # If its not then I can use Alibi
+        # If it is then I might need to use a different model or implement Rope scaling
+        self.transformer_encoder = XEncoder(
+            dim  = d_model,
+            depth = num_encoders,
+            heads = heads,
+            ff_mult=4,
+            attn_dropout=dropout,
+            ff_dropout=dropout,
+            attn_sublayer_dropout=dropout,
+            ff_sublayer_dropout=dropout,
+            layer_dropout=dropout,
+            rotary_pos_emb = True,    # enable classic RoPE
+            rotary_xpos_scale_base = rotary_xpos_scale_base
         )
 
         # follow same post‐attention feed‑forward & norms as before
@@ -64,7 +67,7 @@ class Noise_Regressor(nn.Module):
         super(Noise_Regressor, self).__init__()
 
         self.norm1 = nn.LayerNorm(d_model)
-        self.hidden_state_to_noise_params = nn.Linear(d_model, NUM_OF_IMUS * NUM_OF_NOISE_PARAMS)
+        self.hidden_state_to_noise_params = nn.Linear(d_model, NUM_OF_IMU_AXES * NUM_OF_NOISE_PARAMS)
         self.eps = 1e-5
         self.device = device
 
@@ -72,31 +75,33 @@ class Noise_Regressor(nn.Module):
         hidden_states should be of dimension (Batch, Sequence Len, Dim)
         B should always be 1
     """
-    # PLEASE CONVERT TO EINOPS (this will be hardly readable to anyone but the people who live in my head)
-    def forward(self, hidden_states, min_orig_accel_norm):
+    def forward(self, hidden_states):
         seq_len = hidden_states.shape[1]
 
         t_step = torch.triu(torch.arange(seq_len, device=self.device, dtype=torch.float32) - torch.arange(seq_len, device=self.device, dtype=torch.float32)[:, None])
 
         hidden_normed = self.norm1(hidden_states)
-        noise_params = self.hidden_state_to_noise_params(hidden_normed).view(seq_len, NUM_OF_NOISE_PARAMS, NUM_OF_IMUS)
+        noise_params = self.hidden_state_to_noise_params(hidden_normed).view(seq_len, NUM_OF_NOISE_PARAMS, NUM_OF_IMU_AXES)
 
-        c = noise_params[:, 4, :].view(seq_len, 1, NUM_OF_IMUS)
-        c_theta = noise_params[:, 5, :].view(seq_len, 1, NUM_OF_IMUS)
-        phi = noise_params[:, 6, :].view(seq_len, 1, NUM_OF_IMUS)
-        phi_theta = noise_params[:, 7, :].view(seq_len, 1, NUM_OF_IMUS)
+        c = noise_params[:, 4, :].view(seq_len, 1, NUM_OF_IMU_AXES)
+        c_theta = noise_params[:, 5, :].view(seq_len, 1, NUM_OF_IMU_AXES)
+        phi = noise_params[:, 6, :].view(seq_len, 1, NUM_OF_IMU_AXES)
+        phi_theta = noise_params[:, 7, :].view(seq_len, 1, NUM_OF_IMU_AXES)
 
-        d = F.softplus(noise_params[:, 1, :]).view(seq_len, 1, NUM_OF_IMUS)
-        k = (d**2).div(4) + F.softplus(noise_params[:, 0, :]).view(seq_len, 1, NUM_OF_IMUS)
+        d = F.softplus(noise_params[:, 1, :]).view(seq_len, 1, NUM_OF_IMU_AXES)
+        k = (d**2).div(4) + F.softplus(noise_params[:, 0, :]).view(seq_len, 1, NUM_OF_IMU_AXES)
 
-        d_theta = F.softplus(noise_params[:, 3, :]).view(seq_len, 1, NUM_OF_IMUS)
-        k_theta = (d_theta**2).div_(4) + F.softplus(noise_params[:, 2, :]).view(seq_len, 1, NUM_OF_IMUS)
+        d_theta = F.softplus(noise_params[:, 3, :]).view(seq_len, 1, NUM_OF_IMU_AXES)
+        k_theta = (d_theta**2).div_(4) + F.softplus(noise_params[:, 2, :]).view(seq_len, 1, NUM_OF_IMU_AXES)
 
-        noise_bias = noise_params[:, 8, :].T
-        noise_std = F.softplus(noise_params[:, 9, :].T)
+        acc_base = F.softplus(noise_params[:, 8, :].T)
+        acc_std = F.softplus(noise_params[:, 9, :].T)
+
+        gyro_base = F.softplus(noise_params[:, 10, :].T)
+        gyro_std = F.softplus(noise_params[:, 11, :].T)
 
         kinematics_list = []
-        for imu_num in range(NUM_OF_IMUS):
+        for imu_num in range(NUM_OF_IMU_AXES):
             k_imu = k[:, :, imu_num]
             d_imu = d[:, :, imu_num]
             omega1 = (k_imu.mul_(4) - (d_imu ** 2)).sqrt_() / 2
@@ -117,7 +122,7 @@ class Noise_Regressor(nn.Module):
             summed_kinematics = torch.sum(spring_damper_kinematics_per_step, dim=0, keepdim=True)
             kinematics_list.append(summed_kinematics)
 
-        return torch.cat(kinematics_list, dim=0).add_(min_orig_accel_norm).add_(noise_bias), noise_std
+        return torch.cat(kinematics_list, dim=0), acc_base, acc_std, gyro_base, gyro_std
 
 
 
@@ -141,7 +146,7 @@ class Trase(nn.Module):
 
         self.noise_regressor = Noise_Regressor(d_model, device)
 
-    def forward(self, x, min_orig_accel_norm):
+    def forward(self, x):
         x = self.linear1(x)
         x = self.layer_norm1(x)
         x = self.activation1(x)
@@ -164,20 +169,56 @@ class Trase(nn.Module):
 
         encoded_states = residual_2 + x
 
-        kinematics, std = self.noise_regressor(encoded_states, min_orig_accel_norm)
+        kinematics, acc_pred, acc_std, gyro_pred, gyro_std = self.noise_regressor(encoded_states)
 
-        return kinematics, std # kinematics is essentially the mean
+        return kinematics, acc_pred, acc_std, gyro_pred, gyro_std
 
-class Trase_Loss(nn.Module):
-    def __init__(self, l1_weight=0.5, nll_weight=0.5):
-        super(Trase_Loss, self).__init__()
-        self.smooth_l1 = nn.SmoothL1Loss()
-        self.gaussian_negative_log_likelihood = nn.GaussianNLLLoss()
-        self.l1_weight = l1_weight
-        self.nll_weight = nll_weight
+class TotalVariationLoss(nn.Module):
+    """
+    Computes the total variation (TV) of an input tensor along its last dimension:
+        TV(x) = sum_i | x[..., i+1] - x[..., i] |
+    
+    Args:
+        p (int, optional): Exponent for the difference. p=1 gives classic TV; p=2 gives squared-TV.
+        reduction (str, optional): 'mean' | 'sum' | 'none'.  Specifies how to reduce over batch & positions.
+    """
+    def __init__(self, p: int = 1, reduction: str = 'mean'):
+        super().__init__()
+        if reduction not in ('none', 'mean', 'sum'):
+            raise ValueError("reduction must be 'none', 'mean', or 'sum'")
+        self.p = p
+        self.reduction = reduction
 
-    def forward(self, kinematics, imu, std):
-        l1_term = self.l1_weight * self.smooth_l1(kinematics, imu)
-        nll_term = self.nll_weight * self.gaussian_negative_log_likelihood(kinematics, imu, std)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Compute discrete differences along last dim
+        diff = x[..., 1:] - x[..., :-1]
+        # Apply absolute + exponent
+        tv = diff.abs().pow(self.p)
+        
+        if self.reduction == 'mean':
+            return tv.mean()
+        elif self.reduction == 'sum':
+            return tv.sum()
+        else:  # 'none'
+            return tv
 
-        return l1_term + nll_term
+
+
+class TraseLoss(nn.Module):
+    def __init__(self, total_var_weight=1e-2):
+        super(TraseLoss, self).__init__()
+        self.gyro_loss = nn.GaussianNLLLoss()
+        self.acc_loss = nn.GaussianNLLLoss()
+        self.tv_loss = TotalVariationLoss()
+        
+        self.total_var_weight = total_var_weight
+
+    def forward(self, kinematics, acc_mean, acc_std, real_acc, gyro_mean, gyro_std, real_gyro, include_gyro=False):
+        acc_pred = kinematics + acc_mean
+        loss = self.acc_loss(acc_pred, real_acc, acc_std) + self.total_var_weight * self.tv_loss(acc_mean)
+
+        if include_gyro:
+          loss += self.gyro_loss(gyro_mean, real_gyro, gyro_std)  
+
+
+        return loss

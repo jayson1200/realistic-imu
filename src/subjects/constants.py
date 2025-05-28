@@ -89,23 +89,30 @@ NIMBLE_BODY_NODES_TOTAL_CAPTURE = [
 ]
 
 NIMBLE_BODY_NODES_ALL = [
-    'head', 
-    'thorax', 
-    'pelvis', 
-    'scapula_l', 
-    'scapula_r', 
-    'humerus_l', 
-    'humerus_r', 
-    'ulna_l', 
-    'ulna_r', 
-    'femur_l', 
-    'femur_r', 
-    'tibia_l', 
-    'tibia_r', 
-    'hand_l', 
-    'hand_r', 
-    'calcn_l', 
-    'calcn_r'
+    'pelvis',
+    'femur_r',
+    'tibia_r',
+     'talus_r',
+     'calcn_r',
+     'toes_r',
+     'femur_l',
+     'tibia_l',
+     'talus_l',
+     'calcn_l',
+     'toes_l',
+     'lumbar_body',
+     'thorax',
+     'head',
+     'scapula_r',
+     'humerus_r',
+     'ulna_r',
+     'radius_r',
+     'hand_r',
+     'scapula_l',
+     'humerus_l',
+     'ulna_l',
+     'radius_l',
+     'hand_l'
 ]
 
 _sets = [

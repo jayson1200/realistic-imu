@@ -333,7 +333,7 @@ class Subject:
 
         for trial in self.opt_trans.keys():
             inputs = []
-            mask = []
+            output_mask = []
             accelerations_output = []
             angular_velocities_output = []
 
@@ -341,6 +341,7 @@ class Subject:
 
             for node in NIMBLE_BODY_NODES_ALL:
                 if node in self.index_map:
+                    inputs.append(np.ones((time_steps, 1)))
                     inputs.append(self.syn_imu[trial]["acc"][:, self.index_map[node], :])
                     inputs.append(self.syn_imu[trial]["angular_vel"][:, self.index_map[node], :])
                     inputs.append(self.syn_imu[trial]["angular_accel"][:, self.index_map[node], :])
@@ -353,28 +354,26 @@ class Subject:
                     if "ang_vel" in self.trial_imu_map[trial]:
                         angular_velocities_output.append(self.trial_imu_map[trial]["ang_vel"][:, self.index_map[node], :])
 
-                    mask.extend([1] * 15)
+                    output_mask.extend([1] * 3)
                 else:
-                    inputs.append(np.zeros((time_steps, 15)))
+                    inputs.append(np.zeros((time_steps, 17)))
                     accelerations_output.append(np.zeros((time_steps, 3)))
 
                     if "ang_vel" in self.trial_imu_map[trial]:
                         angular_velocities_output.append(np.zeros((time_steps, 3)))
 
-                    mask.extend([0] * 15)
+                    output_mask.extend([0] * 3)
 
 
             trials.append({
                 "inputs": np.concatenate(inputs, axis=-1),
                 "accelerations_output": np.concatenate(accelerations_output, axis=-1),
                 "angular_velocities_output": np.concatenate(angular_velocities_output, axis=-1) if len(angular_velocities_output) > 0 else None,
-                "weights": NIMBLE_BODY_NODE_WEIGHTS ,
-                "mask": mask,
+                "weights": np.array(NIMBLE_BODY_NODE_WEIGHTS).reshape(1, -1),
+                "output_mask": np.array(output_mask).reshape(1, -1),
                 "trial_name": trial,
                 "subject_num": self.subject_num,
                 "dataset": self.__class__.__name__
             })
 
         return trials
-
-

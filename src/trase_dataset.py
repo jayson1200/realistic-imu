@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 import pickle
+from einops import rearrange
 
 
 class TraseDataset(Dataset):
@@ -16,10 +17,22 @@ class TraseDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        inputs = torch.from_numpy(self.data_path[idx]["inputs"]).to(device=self.deivce, dtype=torch.float32)
-        accelerations_output = torch.from_numpy(self.data_path[idx]["accelerations_output"]).to(device=self.deivce, dtype=torch.float32)
+        inputs = torch.from_numpy(self.data[idx]["inputs"]).to(device=self.device, dtype=torch.float32).unsqueeze(0)
+        accelerations_output = torch.from_numpy(self.data[idx]["accelerations_output"]).to(device=self.device, dtype=torch.float32).T
 
-        angular_velocities_numpy = self.data_path[idx]["angular_velocites_output"]
-        angular_velocities_output = torch.from_numpy(angular_velocities_numpy).to(device=self.deivce, dtype=torch.float32) if angular_velocities_numpy!= None else None
+        angular_velocities_output = None
+        
+        if 'angular_velocities_output' in self.data[idx]:
+          angular_velocities_numpy = self.data[idx]["angular_velocities_output"]
+          angular_velocities_output = torch.from_numpy(angular_velocities_numpy).to(device=self.device, dtype=torch.float32).T if angular_velocities_numpy is not None else None
 
-        return inputs, accelerations_output, angular_velocities_output
+        output_mask = torch.from_numpy(self.data[idx]["output_mask"]).to(device=self.device, dtype=torch.float32)
+        weights = torch.tensor(self.data[idx]["weights"], device=self.device, dtype=torch.float32)
+
+        return {
+          "inputs": inputs,
+          "accelerations_output": accelerations_output,
+          "angular_velocities_output": angular_velocities_output,
+          "output_mask": output_mask,
+          "weights": weights
+        }

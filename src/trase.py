@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.nn.functional import smooth_l1_loss
 from x_transformers import Encoder as XEncoder
 
-from einops import repeat
+from einops import repeat, rearrange
 
 NUM_OF_IMU_AXES = 72
 NUM_OF_NOISE_PARAMS = 12
@@ -36,7 +36,7 @@ class Encoder(nn.Module):
             ff_sublayer_dropout=dropout,
             layer_dropout=dropout,
             rotary_pos_emb = True,    # enable classic RoPE
-            rotary_xpos_scale_base = rotary_xpos_scale_base
+            rotary_xpos_scale_base = rotary_xpos_scale_base,
         )
 
         # follow same post‐attention feed‑forward & norms as before
@@ -66,7 +66,6 @@ class Encoder(nn.Module):
 class Noise_Regressor(nn.Module):
     def __init__(self, d_model, device, max_propogation=600):
         super(Noise_Regressor, self).__init__()
-
         self.norm1 = nn.LayerNorm(d_model)
         self.hidden_state_to_noise_params = nn.Linear(d_model, NUM_OF_IMU_AXES * NUM_OF_NOISE_PARAMS)
         self.eps = 1e-5
@@ -81,62 +80,70 @@ class Noise_Regressor(nn.Module):
         seq_len = hidden_states.shape[1]
         time_steps_propogate_kinematics = min(self.max_propogation, seq_len)
 
-        t_step = repeat(torch.arange(time_steps_propogate_kinematics, device=self.device, dtype=torch.float32), 't -> seq t', seq=seq_len)
+        t_step = repeat(
+            torch.arange(time_steps_propogate_kinematics, device=self.device, dtype=torch.float32),
+            't -> seq t',
+            seq=seq_len
+        )
 
         hidden_normed = self.norm1(hidden_states)
-        noise_params = self.hidden_state_to_noise_params(hidden_normed).view(seq_len, NUM_OF_NOISE_PARAMS, NUM_OF_IMU_AXES)
 
-        c = noise_params[:, 4, :].view(seq_len, 1, NUM_OF_IMU_AXES)
-        c_theta = noise_params[:, 5, :].view(seq_len, 1, NUM_OF_IMU_AXES)
-        phi = noise_params[:, 6, :].view(seq_len, 1, NUM_OF_IMU_AXES)
-        phi_theta = noise_params[:, 7, :].view(seq_len, 1, NUM_OF_IMU_AXES)
+        # collapse batch dim (B=1) and then reshape
+        params_flat = self.hidden_state_to_noise_params(hidden_normed).squeeze(0)  # [seq_len, 864]
+        noise_params = rearrange(
+            params_flat,
+            'seq (params axes) -> seq params axes',
+            params=NUM_OF_NOISE_PARAMS,
+            axes=NUM_OF_IMU_AXES
+        )  # [seq_len, 12, 72]
 
-        d = F.softplus(noise_params[:, 1, :]).view(seq_len, 1, NUM_OF_IMU_AXES)
-        k = (d**2).div(4) + F.softplus(noise_params[:, 0, :]).view(seq_len, 1, NUM_OF_IMU_AXES)
+        c          = rearrange(noise_params[:, 4, :], 'seq axes -> seq 1 axes')
+        c_theta    = rearrange(noise_params[:, 5, :], 'seq axes -> seq 1 axes')
+        phi        = rearrange(noise_params[:, 6, :], 'seq axes -> seq 1 axes')
+        phi_theta  = rearrange(noise_params[:, 7, :], 'seq axes -> seq 1 axes')
 
-        d_theta = F.softplus(noise_params[:, 3, :]).view(seq_len, 1, NUM_OF_IMU_AXES)
-        k_theta = (d_theta**2).div_(4) + F.softplus(noise_params[:, 2, :]).view(seq_len, 1, NUM_OF_IMU_AXES)
+        d          = rearrange(F.softplus(noise_params[:, 1, :]), 'seq axes -> seq 1 axes')
+        k          = d.pow(2).div(4).add(
+                         rearrange(F.softplus(noise_params[:, 0, :]), 'seq axes -> seq 1 axes')
+                     )
 
-        acc_base = noise_params[:, 8, :].T
-        acc_std = F.softplus(noise_params[:, 9, :].T)
+        d_theta    = rearrange(F.softplus(noise_params[:, 3, :]), 'seq axes -> seq 1 axes')
+        k_theta    = d_theta.pow(2).div(4).add(
+                         rearrange(F.softplus(noise_params[:, 2, :]), 'seq axes -> seq 1 axes')
+                     )
 
-        gyro_base = noise_params[:, 10, :].T
-        gyro_std = F.softplus(noise_params[:, 11, :].T)
+        acc_base   = rearrange(noise_params[:, 8, :], 'seq axes -> axes seq')
+        acc_std    = rearrange(F.softplus(noise_params[:, 9, :]), 'seq axes -> axes seq')
+
+        gyro_base  = rearrange(noise_params[:, 10, :], 'seq axes -> axes seq')
+        gyro_std   = rearrange(F.softplus(noise_params[:, 11, :]), 'seq axes -> axes seq')
 
         kinematics_list = []
         for imu_num in range(NUM_OF_IMU_AXES):
             k_imu = k[:, :, imu_num]
             d_imu = d[:, :, imu_num]
-            omega1 = (k_imu.mul_(4) - (d_imu ** 2)).sqrt_() / 2
+            omega1 = (k_imu.mul(4).sub(d_imu.pow(2))).sqrt().div(2)
 
-            exp_term_linear = ((-d_imu / 2) * t_step).exp_()
-            sin_term_linear = (t_step * omega1).add_(phi[:, :, imu_num]).sin_()
+            exp_term_linear   = ((-d_imu.div(2)).unsqueeze(1) * t_step).exp()
+            sin_term_linear   = (t_step * omega1.unsqueeze(1) + phi[:, :, imu_num]).sin()
             linear_kinematics = c[:, :, imu_num] * exp_term_linear * sin_term_linear
 
-            k_theta_imu = k_theta[:, :, imu_num]
-            d_theta_imu = d_theta[:, :, imu_num]
-            omega1_theta = (k_theta_imu.mul_(4) - (d_theta_imu ** 2)).sqrt_() / 2
+            k_theta_imu        = k_theta[:, :, imu_num]
+            d_theta_imu        = d_theta[:, :, imu_num]
+            omega1_theta       = (k_theta_imu.mul(4).sub(d_theta_imu.pow(2))).sqrt().div(2)
 
-            exp_term_angular = ((-d_theta_imu / 2) * t_step).exp_()
-            sin_term_angular = (t_step * omega1_theta).add_(phi_theta[:, :, imu_num]).sin_()
+            exp_term_angular   = ((-d_theta_imu.div(2)).unsqueeze(1) * t_step).exp()
+            sin_term_angular   = (t_step * omega1_theta.unsqueeze(1) + phi_theta[:, :, imu_num]).sin()
             angular_kinematics = c_theta[:, :, imu_num] * exp_term_angular * sin_term_angular
 
-            spring_damper_kinematics_per_step = linear_kinematics.add_(angular_kinematics)
-            
-            kinematics_positions = (torch.arange(time_steps_propogate_kinematics, device=self.device, dtype=torch.int64).unsqueeze(0) 
-                                    + torch.arange(seq_len, device=self.device, dtype=torch.int64).unsqueeze(1)) 
+            spring_damper_kinematics_per_step = linear_kinematics + angular_kinematics
 
-            """
-            summed_kinematics = torch.zeros(seq_len + time_steps_propogate_kinematics - 1, 
-                                            dtype=torch.float32, 
-                                            device=self.device)
-
-            summed_kinematics.scatter_add_(0,
-                                           kinematics_positions.reshape(-1),
-                                           spring_damper_kinematics_per_step.reshape(-1))
-        
-            kinematics_list.append(summed_kinematics[:seq_len].unsqueeze(0))
-            """
+            kinematics_positions = (
+                torch.arange(time_steps_propogate_kinematics, device=self.device, dtype=torch.int64)
+                     .unsqueeze(0)
+                + torch.arange(seq_len, device=self.device, dtype=torch.int64)
+                     .unsqueeze(1)
+            )
 
             pos_flat  = kinematics_positions.reshape(-1)
             vals_flat = spring_damper_kinematics_per_step.reshape(-1)
@@ -145,11 +152,18 @@ class Noise_Regressor(nn.Module):
             vals_flat = vals_flat[mask]
 
             out = torch.zeros(seq_len, dtype=vals_flat.dtype, device=self.device)
-            out.scatter_add_(0, pos_flat, vals_flat)
+            out = out.scatter_add(0, pos_flat, vals_flat)
 
             kinematics_list.append(out.unsqueeze(0))
 
-        return torch.cat(kinematics_list, dim=0), acc_base, acc_std, gyro_base, gyro_std
+        return (
+            torch.cat(kinematics_list, dim=0),
+            acc_base,
+            acc_std,
+            gyro_base,
+            gyro_std
+        )
+
 
 
 

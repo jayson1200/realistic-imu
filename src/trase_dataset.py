@@ -34,5 +34,6 @@ class TraseDataset(Dataset):
           "accelerations_output": accelerations_output,
           "angular_velocities_output": angular_velocities_output,
           "output_mask": output_mask,
-          "weights": weights
+          "weights": weights,
+          "origin": self.data[idx]["dataset"]
         }

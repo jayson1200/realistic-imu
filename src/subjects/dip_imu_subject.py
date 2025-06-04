@@ -54,6 +54,6 @@ class DIPSubject(Subject):
             body_node_in_world = self.opt_trans[trial]["body_node_in_world_frame"][:, :, :-1, :-1]
 
             world_to_imu_transform = einsum(imu_in_body_node, body_node_in_world, "imu j i, seq imu k j -> seq imu i k")
-            gravity_vec_in_imu_frame = einsum(world_to_imu_transform, self.gravity_vec_two, "seq imu i k, k j-> seq imu i")
+            gravity_vec_in_imu_frame = einsum(world_to_imu_transform, -self.gravity_vec_two, "seq imu i k, k j-> seq imu i")
 
-            self.trial_imu_map[trial]["acc"] = gravity_vec_in_imu_frame - self.trial_imu_map[trial]["acc"]
+            self.trial_imu_map[trial]["acc"] = self.trial_imu_map[trial]["acc"] - gravity_vec_in_imu_frame

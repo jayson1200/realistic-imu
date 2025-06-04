@@ -12,7 +12,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 import wandb
-from trase_dataset import TraseDataset
+from dataset import MotionDataset
 from trase import Trase
 
 if 'ipykernel' in sys.modules:

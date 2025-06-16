@@ -138,8 +138,8 @@ class TotalCaptureSubject(Subject):
                 i_real = slice(0,0)
                 i_syn = slice(0,0)
             else:
-                mask_acc = np.ones_like(syn_imu_acc[:, 5], dtype=np.float32) # Mask for sensor 5
-                mask_ang = np.ones_like(syn_imu_ang[:, 5], dtype=np.float32) # Mask for sensor 5
+                mask_acc = (syn_imu_acc[:, 5] < 30).astype(np.float32) # Mask for sensor 5
+                mask_ang =  (syn_imu_ang[:, 5] < 30).astype(np.float32) # Mask for sensor 5
 
                 def raw_corr(a, b, m):
                     # Ensure a and b are 1D for correlate
@@ -207,8 +207,6 @@ class TotalCaptureSubject(Subject):
             self.syn_imu[key].update(syn_data_updates)
             self.joint_data_map[key].update(joint_data_updates)
 
-
-
     @staticmethod
     def read_sensors_file(file_path):
         with open(file_path, 'r') as f:
@@ -267,10 +265,10 @@ class TotalCaptureSubject(Subject):
             syn_imu_angv_data_normed  = torch.linalg.norm(syn_imu_angular_vel_data, dim=-1)
             syn_imu_angular_accel_data_normed = torch.linalg.norm(syn_imu_angular_accel_data, dim=-1)
 
-            high_signal_filter_acc = (real_imu_normed < 15) & (syn_imu_data_normed < 15)
+            high_signal_filter_acc = (real_imu_normed < 20) & (syn_imu_data_normed < 20)
             high_signal_filter_acc = high_signal_filter_acc.float().detach().unsqueeze(-1)
             
-            high_signal_filter_angv = (real_imu_angv_normed < 15) & (syn_imu_angv_data_normed < 15) & (syn_imu_angular_accel_data_normed < 30)
+            high_signal_filter_angv = (real_imu_angv_normed < 20) & (syn_imu_angv_data_normed < 20) & (syn_imu_angular_accel_data_normed < 30)
             high_signal_filter_angv = high_signal_filter_angv.float().detach().unsqueeze(-1)
 
             trial_body_node_world_transforms = torch.tensor(self.get_world_transforms(trial_name), device=self.device, dtype=torch.float32)
